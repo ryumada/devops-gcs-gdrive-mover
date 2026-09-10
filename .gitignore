@@ -1,0 +1,13 @@
+.vscode
+
+# Environment and credential secrets
+.env
+*.env
+*.json
+secrets/
+credentials/
+
+# Temporary files and logs
+tmp/
+*.tmp
+*.log
