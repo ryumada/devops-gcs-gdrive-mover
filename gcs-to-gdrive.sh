@@ -207,6 +207,7 @@ generate_bearer_token_from_sa() {
 
 # --- Token Management with In-Memory Caching ---
 get_gcs_token() {
+  local force="${1:-false}"
   if [ -n "$GCS_ACCESS_TOKEN" ]; then
     echo "$GCS_ACCESS_TOKEN"
     return 0
@@ -214,7 +215,7 @@ get_gcs_token() {
 
   local now
   now=$(date +%s)
-  if [ -n "$GCS_TOKEN_VALUE" ] && [ "$now" -lt "$((GCS_TOKEN_EXPIRY - 120))" ]; then
+  if [ "$force" != "true" ] && [ -n "$GCS_TOKEN_VALUE" ] && [ "$now" -lt "$((GCS_TOKEN_EXPIRY - 120))" ]; then
     echo "$GCS_TOKEN_VALUE"
     return 0
   fi
@@ -237,6 +238,7 @@ get_gcs_token() {
 }
 
 get_gdrive_token() {
+  local force="${1:-false}"
   if [ -n "$GDRIVE_ACCESS_TOKEN" ]; then
     echo "$GDRIVE_ACCESS_TOKEN"
     return 0
@@ -244,7 +246,7 @@ get_gdrive_token() {
 
   local now
   now=$(date +%s)
-  if [ -n "$GDRIVE_TOKEN_VALUE" ] && [ "$now" -lt "$((GDRIVE_TOKEN_EXPIRY - 120))" ]; then
+  if [ "$force" != "true" ] && [ -n "$GDRIVE_TOKEN_VALUE" ] && [ "$now" -lt "$((GDRIVE_TOKEN_EXPIRY - 120))" ]; then
     echo "$GDRIVE_TOKEN_VALUE"
     return 0
   fi
@@ -408,6 +410,15 @@ upload_file_to_gdrive() {
   local chunk_size="$4"
   local mime_type="$5"
   local token="$6"
+
+  # Fallback to acquiring a fresh token if not provided
+  if [ -z "$token" ]; then
+    token=$(get_gdrive_token "true")
+    if [ -z "$token" ]; then
+      log_error "Failed to acquire Google Drive bearer token for upload."
+      return 1
+    fi
+  fi
 
   local file_size
   file_size=$(wc -c < "$local_file" | tr -d ' ')
@@ -602,6 +613,16 @@ transfer_single_object() {
     return 1
   fi
 
+  # Generate fresh Google Drive bearer token right before upload
+  # to prevent token expiration if GCS download took a long time
+  log_info "Acquiring fresh Google Drive bearer token before upload..."
+  gdrive_token=$(get_gdrive_token "true")
+  if [ -z "$gdrive_token" ]; then
+    log_error "Failed to acquire fresh Google Drive bearer token before upload."
+    rm -f "$local_temp_file" 2>/dev/null || true
+    return 1
+  fi
+
   log_info "Uploading to Google Drive..."
   local drive_file_id
   drive_file_id=$(upload_file_to_gdrive "$local_temp_file" "$target_name" "$GDRIVE_FOLDER_ID" "$GDRIVE_CHUNK_SIZE" "$gcs_mime" "$gdrive_token")
@@ -621,6 +642,8 @@ transfer_single_object() {
     log_info "Source gs://${bucket}/${object} retained in GCS (--keep-source active)."
   else
     log_info "Deleting source object gs://${bucket}/${object} from GCS..."
+    # Refresh GCS token in case download and upload duration exceeded token validity
+    gcs_token=$(get_gcs_token)
     if delete_gcs_object "$bucket" "$object" "$gcs_token"; then
       log_success "Source gs://${bucket}/${object} deleted successfully from GCS."
     else
